@@ -1,0 +1,21 @@
+services:
+  gallicagram-v2:
+    build: .
+    container_name: gallicagram_v2
+    ports:
+      - "8002:8002"
+    volumes:
+      - /opt/bazoulay:/opt/bazoulay
+      - /opt/bazoulay/LRFAF:/root/LRFAF
+    restart: always
+
+  gallicagram-v2-mcp:
+    build: .
+    container_name: gallicagram_v2_mcp
+    ports:
+      - "8003:8003"
+    volumes:
+      - /opt/bazoulay:/opt/bazoulay
+      - /opt/bazoulay/LRFAF:/root/LRFAF
+    command: ["uvicorn", "mcp_server:mcp_app", "--host", "0.0.0.0", "--port", "8003"]
+    restart: always
