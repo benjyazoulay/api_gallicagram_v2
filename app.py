@@ -1,5 +1,6 @@
 import os
 import re
+import json
 import sqlite3
 import contextlib
 import io
@@ -124,11 +125,13 @@ class SourceRapResultItem(BaseModel):
     context_right: str
 
 class SnippetItem(BaseModel):
-    """Extrait textuel (concordancier) avec mot pivot"""
+    """Extrait textuel (concordancier) avec mot pivot et lien vers la page numérisée"""
     left_context: str
     pivot: str
     right_context: str
     formatted: str
+    page_num: Optional[int] = None
+    page_url: Optional[str] = None
 
 class GallicaDocumentOccurrence(BaseModel):
     """Document historique issu de Gallica avec ses extraits de contexte (snippets)"""
@@ -1678,36 +1681,54 @@ async def _fetch_single_context(
     try:
         resp = await client.get(f"{base_url}/api/context", params=context_params)
         if resp.status_code == 200:
-            data = resp.json()
+            try:
+                data = json.loads(resp.content.decode("utf-8"))
+            except Exception:
+                data = json.loads(resp.content.decode("latin-1", errors="replace"))
+
             if isinstance(data, list):
                 for item in data:
                     left = item.get("left_context") or item.get("context_left") or ""
                     pivot = item.get("pivot") or mot
                     right = item.get("right_context") or item.get("context_right") or ""
-                    formatted = f"...{left.strip()} **{pivot.strip()}** {right.strip()}..."
+                    page_num = item.get("page_num")
+                    page_url = item.get("page_url")
+
+                    page_link = f" [*(page {page_num})*]({page_url})" if (page_num and page_url) else ""
+                    formatted = f"...{left.strip()} **{pivot.strip()}** {right.strip()}...{page_link}"
+
                     snippets.append(SnippetItem(
                         left_context=left,
                         pivot=pivot,
                         right_context=right,
-                        formatted=formatted
+                        formatted=formatted,
+                        page_num=int(page_num) if page_num is not None else None,
+                        page_url=page_url
                     ))
             elif isinstance(data, dict):
                 left = data.get("left_context") or data.get("context_left") or ""
                 pivot = data.get("pivot") or mot
                 right = data.get("right_context") or data.get("context_right") or ""
-                formatted = f"...{left.strip()} **{pivot.strip()}** {right.strip()}..."
+                page_num = data.get("page_num")
+                page_url = data.get("page_url")
+
+                page_link = f" [*(page {page_num})*]({page_url})" if (page_num and page_url) else ""
+                formatted = f"...{left.strip()} **{pivot.strip()}** {right.strip()}...{page_link}"
+
                 snippets.append(SnippetItem(
                     left_context=left,
                     pivot=pivot,
                     right_context=right,
-                    formatted=formatted
+                    formatted=formatted,
+                    page_num=int(page_num) if page_num is not None else None,
+                    page_url=page_url
                 ))
     except Exception:
         # En cas d'erreur de récupération du contexte pour un document, on ne bloque pas l'ensemble
         pass
 
     # Construction du rendu Markdown
-    snippets_md = "\n".join(s.formatted for s in snippets) if snippets else "*(Aucun extrait textuel disponible)*"
+    snippets_md = "\n\n".join(s.formatted for s in snippets) if snippets else "*(Aucun extrait textuel disponible)*"
     doc_url = url if url else (f"https://gallica.bnf.fr/ark:/12148/{ark}" if ark else "")
     title_link = f"[{paper_title}]({doc_url})" if doc_url else paper_title
     
@@ -1729,18 +1750,23 @@ async def _fetch_single_context(
     response_model=Union[str, List[GallicaDocumentOccurrence]],
     summary="Recherche d'occurrences et extraction de citations textuelles en contexte (Snippets Gallica)",
     description="""
-Recherche dans les archives numérisées de Gallica (Presse et Livres de la BNF) pour une année et un terme donnés, et extrait automatiquement les **citations en contexte réel (snippets / concordancier)** avec le mot recherché mis en évidence.
+Recherche dans les archives numérisées de Gallica (Presse et Livres de la BNF) pour une année (et optionnellement un mois) et un terme donnés, et extrait automatiquement les **citations en contexte réel (snippets / concordancier)** avec le mot recherché mis en évidence, le numéro de page et le lien direct vers la page numérisée.
 
 ### Fonctionnement coordonné automatique (2 étapes en 1 seul appel) :
-1. **Recherche des occurrences** de fascicules ou ouvrages numérisés contenant le terme.
+1. **Recherche des occurrences** de fascicules ou ouvrages numérisés contenant le terme (filtrée par année et, si fourni, par mois).
 2. **Extraction parallèle des contextes textuels** (quelques mots avant / mot pivot / quelques mots après) pour chaque document.
+
+### Granularité temporelle :
+- `year` seul : recherche sur toute l'année (peut renvoyer des milliers d'occurrences).
+- `year` + `month` : **recommandé pour affiner** — filtre au mois exact, réduisant drastiquement le volume (ex: 1201 → 63 occurrences pour 'révolution' en juillet 1789).
+- La date exacte jour/mois/année de chaque document trouvé est toujours incluse dans les résultats.
 
 ### Paramètre `mcp_mode` :
 - `mcp_mode=True` (défaut) : renvoie directement une synthèse textuelle en **Markdown clair**, immédiatement lisible et citable par l'IA sans surcharge JSON.
 - `mcp_mode=False` : renvoie la liste d'objets JSON structurés détaillée (`List[GallicaDocumentOccurrence]`).
 
 ### Quand utiliser cet outil :
-- Pour citer des passages authentiques de journaux d'époque (ex: *Le Figaro* en 1850, *L'Humanité* en 1914, *Le Temps* en 1890).
+- Pour citer des passages authentiques de journaux d'époque (ex: *Le Figaro* en 1860, *L'Humanité* en août 1914, *Le Temps* en 1890).
 - Pour vérifier le sens exact, la connotation ou la cible d'un mot dans le texte original numérisé.
 - Pour obtenir des liens directs vers les documents d'archive originaux sur le portail Gallica BNF.
 """
@@ -1757,6 +1783,13 @@ async def context_v2(
         ge=1600,
         le=2025,
         examples=[1850]
+    ),
+    month: Optional[int] = Query(
+        None,
+        description="Mois cible (1-12) pour affiner la recherche au mois exact. Fortement recommandé pour réduire le volume de résultats. Ex: 7 pour juillet, 8 pour août. Ignoré si non fourni.",
+        ge=1,
+        le=12,
+        examples=[7]
     ),
     corpus: str = Query(
         "presse", 
@@ -1786,6 +1819,7 @@ async def context_v2(
 ):
     """
     Coordonne la découverte d'occurrences et l'extraction de citations en contexte (snippets Gallica) en un seul appel transparent.
+    Supporte un filtrage par mois pour affiner la recherche (ex: grève de juin 1936, révolution de juillet 1789).
     """
     default_source, default_codes = CORPUS_SOURCE_MAPPING.get(corpus.lower(), ("periodical", ""))
     actual_source = source if source is not None else default_source
@@ -1799,8 +1833,17 @@ async def context_v2(
         "limit": str(limit),
         "source": actual_source,
     }
+    if month is not None:
+        occurrences_params["month"] = str(month)
     if actual_codes:
         occurrences_params["codes"] = actual_codes
+
+    # Label de période pour les messages d'erreur / markdown
+    MONTH_NAMES_FR = {
+        1: "janvier", 2: "février", 3: "mars", 4: "avril", 5: "mai", 6: "juin",
+        7: "juillet", 8: "août", 9: "septembre", 10: "octobre", 11: "novembre", 12: "décembre"
+    }
+    period_label = f"{MONTH_NAMES_FR.get(month, str(month))} {year}" if month else str(year)
 
     base_url = GALLICA_PROXY_BASE_URL.rstrip('/')
 
@@ -1811,16 +1854,24 @@ async def context_v2(
             if resp.status_code != 200:
                 raise HTTPException(status_code=resp.status_code, detail=f"Erreur API Gallica occurrences: {resp.text}")
             
-            raw_occurrences = resp.json()
-            if not isinstance(raw_occurrences, list):
-                raw_occurrences = [raw_occurrences] if raw_occurrences else []
+            try:
+                raw_data = json.loads(resp.content.decode("utf-8"))
+            except Exception:
+                raw_data = json.loads(resp.content.decode("latin-1", errors="replace"))
+
+            if isinstance(raw_data, dict):
+                raw_occurrences = raw_data.get("records", [])
+            elif isinstance(raw_data, list):
+                raw_occurrences = raw_data
+            else:
+                raw_occurrences = []
         except httpx.RequestError as e:
             raise HTTPException(status_code=502, detail=f"Impossible de contacter l'API proxy Gallica: {str(e)}")
 
         if not raw_occurrences:
             if mcp_mode:
                 return Response(
-                    content=f"*(Aucune occurrence trouvée pour '{search_term}' dans {corpus} en {year})*",
+                    content=f"*(Aucune occurrence trouvée pour '{search_term}' dans {corpus} en {period_label})*",
                     media_type="text/markdown; charset=utf-8"
                 )
             return []
@@ -1834,7 +1885,8 @@ async def context_v2(
 
         if mcp_mode:
             markdown_blocks = [r.formatted_markdown for r in results if r.formatted_markdown]
-            full_markdown = "\n\n---\n\n".join(markdown_blocks) if markdown_blocks else f"*(Aucun extrait disponible pour '{search_term}' en {year})*"
+            header = f"## Extraits : «\u00a0{search_term}\u00a0» dans {corpus} — {period_label}\n\n"
+            full_markdown = header + "\n\n---\n\n".join(markdown_blocks) if markdown_blocks else f"*(Aucun extrait disponible pour '{search_term}' en {period_label})*"
             return Response(content=full_markdown, media_type="text/markdown; charset=utf-8")
 
         return results
