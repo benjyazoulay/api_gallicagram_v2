@@ -555,12 +555,36 @@ def perform_query(
 # ENDPOINTS API V2 ENRICHIS
 # ---------------------------------------------------------------------------
 
-@app.get("/v2/query", response_model=OptimizedQueryResponse)
+@app.get(
+    "/v2/query", 
+    response_model=OptimizedQueryResponse,
+    summary="Séries temporelles d'usage de mots (Fréquences et occurrences)",
+    description="""
+Outil principal pour mesurer l'évolution de la fréquence d'usage d'un ou plusieurs mots dans le temps.
+
+### Fonctionnalités et syntaxe du paramètre `mot` :
+- **Recherche simple** : un mot ou syntagme (ex: `"cheval"`, `"chemin de fer"`).
+- **Comparaison de termes** : séparez les termes par des virgules pour obtenir des séries distinctes (ex: `"bicyclette,automobile,cheval"`).
+- **Somme de variantes / lemmatisation** : utilisez le signe `+` pour additionner des formes fléchies ou synonymes en une seule série (ex: `"cheval+chevaux"`, `"guerre+guerres"`).
+- **Élision automatique** : pour les mots commençant par une voyelle, les formes élidées (`l'amour`, `l’amour`) sont automatiquement incluses.
+
+### Corpus disponibles (`corpus`) :
+- `presse` (défaut, 1789–1950, n-gram max 3, résolutions: `annee`, `mois`) : Presse française numérisée de Gallica.
+- `livres` (1600–1940, n-gram max 5, résolution: `annee`) : Livres français numérisés de Gallica.
+- `lemonde` (1944–2023, n-gram max 4, résolutions: `annee`, `mois`, `jour`) : Quotidien Le Monde.
+- `lemonde_rubriques` (1944–2023, n-gram max 4) : Le Monde ventilé ou filtré par rubriques (ex: `international`, `politique`, `societe`, `economie`, etc.).
+- Journaux historiques (résolutions: `annee`, `mois`, `jour`) : `figaro` (1854-1952), `huma` (1904-1952), `temps` (1861-1942), `moniteur` (1789-1869), `paris` (1777-1827), `journal_des_debats` (1789-1944), `petit_journal` (1863-1942), `petit_parisien` (1876-1944), `la_presse` (1836-1869), `constitutionnel` (1821-1913).
+- Autres : `ddb` (Presse allemande 1780-1950), `subtitles` (Sous-titres FR 1935-2020), `subtitles_en` (Sous-titres EN 1930-2020), `rap` (Paroles de rap FR 1989-2024).
+
+### Données renvoyées :
+Format colonnaire optimisé contenant pour chaque terme : `dates` (format ISO YYYY-MM-DD), `n` (nombre d'occurrences absolues), `total` (volume total de mots dans le corpus à cette date), `freq` (fréquence relative normalisée = n / total).
+"""
+)
 async def query_v2(
     mot: str = Query(
         ..., 
-        description="Mot ou expression recherchée. Plusieurs termes peuvent être séparés par des virgules.",
-        examples=["patate"]
+        description="Mot, syntagme ou ensemble de termes. Utilisez ',' pour comparer plusieurs termes (ex: 'vélo,auto') et '+' pour sommer des variantes (ex: 'cheval+chevaux').",
+        examples=["cheval+chevaux,automobile"]
     ),
     corpus: str = Query(
         "presse", 
@@ -570,34 +594,38 @@ async def query_v2(
     fr: int = Query(
         1789, 
         alias="from", 
-        description="Année de début (format YYYY).",
+        description="Année de début (YYYY).",
         ge=1600,
         le=2025,
         examples=[1945]
     ),
     to: int = Query(
         2022, 
-        description="Année de fin (format YYYY).",
+        description="Année de fin (YYYY).",
         ge=1600,
         le=2025,
         examples=[2022]
     ),
     resolution: str = Query(
         "default", 
-        description="Granularité temporelle des résultats.", 
+        description="Granularité temporelle : 'annee' (recommandé), 'mois', ou 'jour' (selon corpus).", 
         enum=["default", "jour", "mois", "annee"],
         examples=["annee"]
     ),
     rubrique: Optional[str] = Query(
         None, 
-        description="**Corpus `lemonde_rubriques` uniquement.** Codes des rubriques à filtrer, séparés par un espace (ex: `international politique`). Si absent, toutes les rubriques sont incluses.",
+        description="**Corpus `lemonde_rubriques` uniquement.** Codes des rubriques séparés par un espace (ex: 'international economie').",
         examples=["international politique"]
     ),
     by_rubrique: bool = Query(
         False, 
-        description="**Corpus `lemonde_rubriques` uniquement.** Si `True`, ventile et sépare les séries de résultats par rubrique."
+        description="**Corpus `lemonde_rubriques` uniquement.** Si True, sépare et ventile les séries temporelles par rubrique."
     )
 ):
+    """
+    Récupère les séries temporelles de fréquence d'usage et d'occurrences pour un ou plusieurs mots/syntagmes.
+    Supporte la comparaison (séparateur ',') et la sommation de variantes (séparateur '+').
+    """
     try:
         grouped_data = perform_query(mot, corpus, fr, to, resolution, rubrique, by_rubrique)
         return {
@@ -861,16 +889,31 @@ async def chart_v2(
         raise HTTPException(status_code=500, detail=f"Erreur lors de la génération du graphique: {str(e)}")
 
 
-@app.get("/v2/contain", response_model=OptimizedQueryResponse)
+@app.get(
+    "/v2/contain", 
+    response_model=OptimizedQueryResponse,
+    summary="Cooccurrence temporelle de 2 termes dans un même n-gramme",
+    description="""
+Mesure l'évolution temporelle de l'apparition conjointe de deux termes (`mot1` et `mot2`) au sein d'une même fenêtre textuelle étroite (n-gramme de 3 à 4 mots selon le corpus).
+
+### Quand utiliser cet outil :
+- Pour analyser des syntagmes complexes ou des collocations sans ordre strict (ex: `mot1="crise"`, `mot2="financière"` ou `mot1="intelligence"`, `mot2="artificielle"`).
+- Pour vérifier si deux notions sont associées dans la même phrase ou proposition.
+
+### Paramètre `count` :
+- `count=True` (défaut) : renvoie une série temporelle unique agrégeant toutes les combinaisons trouvées.
+- `count=False` : renvoie les séries détaillées pour chaque n-gramme distinct contenant les deux mots.
+"""
+)
 async def contain_v2(
     mot1: str = Query(
         ..., 
-        description="Premier mot ou groupe de mots.",
+        description="Premier mot ou lemme obligatoire dans le n-gramme.",
         examples=["crise"]
     ),
     mot2: str = Query(
         ..., 
-        description="Second mot ou groupe de mots.",
+        description="Second mot ou lemme obligatoire dans le n-gramme.",
         examples=["financière"]
     ),
     corpus: str = Query(
@@ -881,21 +924,21 @@ async def contain_v2(
     fr: int = Query(
         1789, 
         alias="from", 
-        description="Année de début (format YYYY).",
+        description="Année de début (YYYY).",
         ge=1600,
         le=2025,
         examples=[1945]
     ),
     to: int = Query(
         2022, 
-        description="Année de fin (format YYYY).",
+        description="Année de fin (YYYY).",
         ge=1600,
         le=2025,
         examples=[2022]
     ),
     count: bool = Query(
         True, 
-        description="Si `True`, renvoie les comptages d'occurrences. Si `False`, renvoie les n-grams bruts correspondants."
+        description="Si True, agrège en une seule série temporelle globale. Si False, détaille par n-gramme trouvé."
     ),
     resolution: str = Query(
         "default", 
@@ -904,6 +947,9 @@ async def contain_v2(
         examples=["annee"]
     )
 ):
+    """
+    Recherche l'évolution temporelle de n-grammes contenant obligatoirement deux mots (mot1 ET mot2) dans la même fenêtre textuelle.
+    """
     mot1_clean = mot1.replace("'", "").lower()
     mot2_clean = mot2.replace("'", "").lower()
     base_table = "gram"
@@ -965,11 +1011,29 @@ async def contain_v2(
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@app.get("/v2/joker", response_model=List[TermFrequency])
+@app.get(
+    "/v2/joker", 
+    response_model=List[TermFrequency],
+    summary="Exploration lexicale - Mots apparaissant autour d'un terme (Wildcard)",
+    description="""
+Recherche exploratoire (Wildcard / joker) découvrant les mots ou syntagmes les plus fréquents apparaissant immédiatement avant ou après un mot pivot.
+
+### Quand utiliser cet outil :
+- Découvrir des adjectifs ou compléments fréquents (ex: que trouve-t-on après `"société"` ou après `"république"` ?).
+- Découvrir des verbes, déterminants ou titres (ex: que trouve-t-on avant `"pasteur"` ou `"napoléon"` ?).
+- Explorer des formules figées d'une époque donnée.
+
+### Paramètres clés :
+- `after=True` (défaut) : cherche les mots qui SUIVENT le mot pivot (ex: `mot="chambre"` -> `"des députés"`, `"syndicale"`).
+- `after=False` : cherche les mots qui PRÉCÈDENT le mot pivot (ex: `mot="guerre"` -> `"grande"`, `"première"`, `"sainte"`).
+- `n_joker` : nombre maximal de termes à renvoyer (ex: `10`, `50` ou `"all"`).
+- `length` : taille totale du n-gramme (pivot inclus). Par exemple, `length=2` renvoie le mot adjacent immédiat (bigramme).
+"""
+)
 async def joker_v2(
     mot: str = Query(
         ..., 
-        description="Mot pivot autour duquel chercher.",
+        description="Mot pivot autour duquel rechercher les compléments lexicaux.",
         examples=["camarade"]
     ),
     corpus: str = Query(
@@ -980,35 +1044,38 @@ async def joker_v2(
     fr: int = Query(
         1789, 
         alias="from", 
-        description="Année de début (format YYYY).",
+        description="Année de début (YYYY).",
         ge=1600,
         le=2025,
         examples=[1945]
     ),
     to: int = Query(
         2022, 
-        description="Année de fin (format YYYY).",
+        description="Année de fin (YYYY).",
         ge=1600,
         le=2025,
         examples=[2022]
     ),
     after: bool = Query(
         True, 
-        description="Si `True`, cherche les mots les plus fréquents après le mot pivot. Si `False`, cherche avant."
+        description="Si True, cherche les mots qui SUIVENT le mot pivot. Si False, cherche les mots qui PRÉCÈDENT."
     ),
     n_joker: str = Query(
         "50", 
-        description="Nombre de résultats maximaux à retourner. Peut être un entier positif ou la chaîne `'all'`.",
+        description="Nombre maximal de résultats à renvoyer (entier ou 'all').",
         examples=["10"]
     ),
     length: Optional[int] = Query(
         None, 
-        description="Longueur du n-gramme complet à cibler (pivot inclus). Les maximums dépendent du corpus : Gallica Presse (3), Le Monde (4), Gallica Livres (5), autres Gallica (2).",
+        description="Longueur du n-gramme total (pivot inclus). 2 = mot adjacent immédiat, 3 = 2 mots adjacents.",
         ge=1,
         le=5,
         examples=[2]
     )
 ):
+    """
+    Recherche les termes apparaissant le plus fréquemment immédiatement avant ou après un mot pivot (recherche joker/wildcard).
+    """
     mot_clean = mot.lower()
     n = length if length is not None else len(mot_clean.split(" ")) + 1
     base_table = "gram_mois" if corpus == "lemonde" else "gram"
@@ -1037,11 +1104,26 @@ async def joker_v2(
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@app.get("/v2/associated", response_model=List[TermFrequency])
+@app.get(
+    "/v2/associated", 
+    response_model=List[TermFrequency],
+    summary="Voisinage lexical et cooccurrences locales (Fenêtre n-gramme)",
+    description="""
+Identifie les mots les plus fréquemment associés dans le voisinage immédiat d'un mot cible (collocations au sein des n-grammes), avec filtrage des mots vides (stopwords).
+
+### Quand utiliser cet outil :
+- Analyse sémantique et contextuelle d'un mot à une époque donnée.
+- Découvrir l'univers lexical ou discursif associé à une notion (ex: quels termes entourent `"progrès"` ou `"atome"` entre 1900 et 1950 ?).
+
+### Paramètre `stopwords` :
+- `stopwords=0` : conserve tous les mots.
+- `stopwords=500` (recommandé) : élimine les 500 mots les plus fréquents de la langue française (`de`, `le`, `la`, `et`, `en`, etc.) pour ne faire ressortir que les termes signifiants.
+"""
+)
 async def associated_v2(
     mot: str = Query(
         ..., 
-        description="Mot pour lequel rechercher des voisins lexicaux.",
+        description="Mot cible pour lequel extraire le voisinage lexical.",
         examples=["changement"]
     ),
     corpus: str = Query(
@@ -1052,38 +1134,41 @@ async def associated_v2(
     fr: int = Query(
         1789, 
         alias="from", 
-        description="Année de début (format YYYY).",
+        description="Année de début (YYYY).",
         ge=1600,
         le=2025,
         examples=[1945]
     ),
     to: int = Query(
         2022, 
-        description="Année de fin (format YYYY).",
+        description="Année de fin (YYYY).",
         ge=1600,
         le=2025,
         examples=[2022]
     ),
     n_joker: str = Query(
         "50", 
-        description="Nombre de résultats maximaux à retourner. Peut être un entier positif ou la chaîne `'all'`.",
+        description="Nombre maximal de voisins lexicaux à renvoyer.",
         examples=["10"]
     ),
     length: Optional[int] = Query(
         None, 
-        description="Taille de la fenêtre de voisinage (longueur du n-gramme incluant le mot, max 3 pour les corpus Gallica).",
+        description="Largeur de la fenêtre de n-gramme (max 3 pour Gallica, max 4 pour Le Monde).",
         ge=1,
         le=5,
         examples=[2]
     ),
     stopwords: int = Query(
         0, 
-        description="Nombre de mots extrêmement fréquents (mots vides) à écarter de la recherche de cooccurrences.",
+        description="Nombre de mots les plus fréquents de la langue française à filtrer (ex: 500 pour éliminer les mots grammaticaux).",
         ge=0,
         le=1000,
         examples=[500]
     )
 ):
+    """
+    Extrait les mots les plus fréquemment associés dans le voisinage immédiat d'un mot cible, avec filtrage optionnel des mots vides.
+    """
     mot_clean = mot.lower()
     n = length if length is not None else len(mot_clean.split(" ")) + 1
     base_table = "gram_mois" if corpus == "lemonde" else "gram"
@@ -1125,40 +1210,58 @@ async def associated_v2(
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@app.get("/v2/cooccur", response_model=OptimizedQueryResponse)
+@app.get(
+    "/v2/cooccur", 
+    response_model=OptimizedQueryResponse,
+    summary="Cooccurrence à l'échelle de l'article complet (Le Monde uniquement)",
+    description="""
+Mesure le nombre et la proportion d'articles du journal *Le Monde* (1944–2023) qui contiennent simultanément deux termes (`mot1` et `mot2`), quelle que soit la distance entre ces termes dans l'article.
+
+### Différence fondamentale avec `/v2/contain` :
+- `/v2/contain` cherche dans une fenêtre très étroite de quelques mots consécutifs (n-gramme).
+- `/v2/cooccur` cherche dans l'ensemble de l'article de presse (cooccurrence thématique globale).
+
+### Quand l'utiliser :
+- Pour analyser si deux sujets ou entités sont traités ensemble dans l'actualité (ex: corrélation entre `"climat"` et `"économie"`, `"ukraine"` et `"otan"`, `"inflation"` et `"salaires"`).
+- Possibilité d'inclure des variantes pour chaque terme en les séparant par un espace (ex: `mot1="climatique climatiques"` et `mot2="crise catastrophes"`).
+"""
+)
 async def cooccur_v2(
     mot1: str = Query(
         ..., 
-        description="Mot ou groupe de mots (les variantes peuvent être délimitées par un espace, ex: `crise crises`).",
+        description="Premier terme ou liste de variantes séparées par un espace (ex: 'climatique climatiques').",
         examples=["climatique climatiques"]
     ),
     mot2: str = Query(
         ..., 
-        description="Mot ou groupe de mots (les variantes peuvent être délimitées par un espace, ex: `crise crises`).",
-        examples=["crise crises"]
+        description="Second terme ou liste de variantes séparées par un espace (ex: 'crise catastrophes').",
+        examples=["crise catastrophes"]
     ),
     fr: int = Query(
         1945, 
         alias="from", 
-        description="Année de début (format YYYY).",
+        description="Année de début (YYYY).",
         ge=1600,
         le=2025,
         examples=[1945]
     ),
     to: int = Query(
         2022, 
-        description="Année de fin (format YYYY).",
+        description="Année de fin (YYYY).",
         ge=1600,
         le=2025,
         examples=[2022]
     ),
     resolution: str = Query(
         "jour", 
-        description="Granularité temporelle des résultats.", 
+        description="Granularité temporelle : 'jour', 'mois' ou 'annee'.", 
         enum=["jour", "mois", "annee"],
         examples=["jour"]
     )
 ):
+    """
+    Mesure la cooccurrence de deux mots au sein d'un même article de presse du quotidien Le Monde (1944-2023).
+    """
     mot1_clean = mot1.replace("'", "").replace(" ", "','").lower()
     mot2_clean = mot2.replace("'", "").replace(" ", "','").lower()
     gram_label = f"{mot1_clean}&{mot2_clean}"
@@ -1206,38 +1309,57 @@ async def cooccur_v2(
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@app.get("/v2/query_persee", response_model=PerseeOptimizedQueryResponse)
+@app.get(
+    "/v2/query_persee", 
+    response_model=PerseeOptimizedQueryResponse,
+    summary="Recherche temporelle dans les revues universitaires de sciences humaines (Persée)",
+    description="""
+Interroge le portail académique *Persée* (1789–2023) regroupant les revues scientifiques et universitaires francophones en sciences humaines et sociales.
+
+### Quand l'utiliser :
+- Pour l'histoire des concepts, les sciences sociales, la linguistique ou la philosophie.
+- Mesurer la diffusion d'un terme dans la recherche académique plutôt que dans la presse généraliste.
+
+### Paramètres clés :
+- `mot` : mot ou syntagme (max 2 mots). Supporte les sommes `+` (ex: `"inégalité+inégalités"`).
+- `revue` : code de la revue scientifique (ex: `"arss"` pour Actes de la recherche en sciences sociales, `"ahess"` pour Annales HSS) ou `"all"` pour l'ensemble des revues.
+- `by_revue=True` : sépare et compare les séries temporelles par revue d'origine.
+"""
+)
 async def query_persee_v2(
     mot: str = Query(
         ..., 
-        description="Mot ou syntagme à chercher (maximum 2 mots).",
+        description="Mot ou syntagme (max 2 mots). Utilisez '+' pour sommer des variantes (ex: 'sociologie+sociologique').",
         examples=["inégalités"]
     ),
     revue: str = Query(
         "all", 
-        description="Codes des revues à filtrer, séparés par un espace (ex: `arss ahess`). Si `'all'`, recherche générale sans filtre.",
+        description="Codes des revues à filtrer, séparés par un espace (ex: 'arss ahess') ou 'all' pour l'ensemble.",
         examples=["arss ahess"]
     ),
     fr: int = Query(
         1789, 
         alias="from", 
-        description="Année de début (format YYYY).",
+        description="Année de début (YYYY).",
         ge=1600,
         le=2025,
         examples=[1789]
     ),
     to: int = Query(
         2022, 
-        description="Année de fin (format YYYY).",
+        description="Année de fin (YYYY).",
         ge=1600,
         le=2025,
         examples=[2022]
     ),
     by_revue: bool = Query(
         False, 
-        description="Si `True`, répartit et filtre les résultats par revue scientifique d'origine."
+        description="Si True, répartit et compare les résultats par revue scientifique d'origine."
     )
 ):
+    """
+    Récupère l'évolution temporelle de termes dans les revues académiques de sciences humaines du portail Persée (1789-2023).
+    """
     word = mot.lower()
     components = [c.strip() for c in word.split('+') if c.strip()]
     n = max(len(comp.split()) for comp in components) if components else 1
@@ -1328,21 +1450,38 @@ async def query_persee_v2(
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@app.get("/v2/source_rap", response_model=List[SourceRapResultItem])
+@app.get(
+    "/v2/source_rap", 
+    response_model=List[SourceRapResultItem],
+    summary="Concordancier et extraits de paroles de rap francophone (Genius / LRFAF)",
+    description="""
+Recherche textuelle et concordancier dans la base complète des paroles de rap francophone (1989–2024).
+
+### Ce que renvoie l'outil :
+Pour chaque occurrence trouvée : l'artiste, le titre du morceau, l'année, l'URL Genius, le nombre d'occurrences, ainsi qu'un concordancier (`context_left`, `pivot`, `context_right`) permettant d'extraire la citation exacte en contexte.
+
+### Quand l'utiliser :
+- Pour illustrer l'usage d'un mot d'argot, néologisme ou référence culturelle par des exemples réels citables.
+- Pour étudier le discours et les thèmes du rap français pour une année précise.
+"""
+)
 async def source_rap_v2(
     mot: str = Query(
         ..., 
-        description="Terme ou expression recherchée dans les textes de rap.",
+        description="Mot ou expression exacte recherchée dans les textes de rap.",
         examples=["banlieue"]
     ), 
     year: int = Query(
         ..., 
-        description="Année d'analyse cible.",
+        description="Année cible de l'analyse (1989-2024).",
         ge=1980,
         le=2026,
         examples=[2018]
     )
 ):
+    """
+    Extrait les morceaux de rap, métadonnées et citations en contexte (concordancier) pour un terme et une année donnée.
+    """
     word_pattern = r"\b" + mot + r"\b"
     word_pattern = word_pattern.replace(r"|", r"\b|\b")
 

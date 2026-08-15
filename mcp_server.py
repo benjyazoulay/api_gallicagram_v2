@@ -51,18 +51,75 @@ if HAS_CACHING:
 
 @mcp.tool()
 async def generate_chart(
-    mot: str,
-    corpus: str = "presse",
-    to: int = 2022,
-    fr: Annotated[int, Field(alias="from")] = 1789,
-    resolution: str = "default",
-    rubrique: Optional[str] = None,
-    by_rubrique: bool = False,
-    chart_type: str = "line",
-    smoothing: Optional[int] = None
+    mot: Annotated[
+        str, 
+        Field(
+            description="Terme(s) à visualiser. Utilisez des virgules pour comparer plusieurs courbes (ex: 'vélo,bicyclette,automobile') ou '+' pour sommer des variantes (ex: 'cheval+chevaux')."
+        )
+    ],
+    corpus: Annotated[
+        str, 
+        Field(
+            description="Corpus cible ('presse', 'livres', 'lemonde', 'lemonde_rubriques', 'figaro', 'huma', 'temps', 'ddb', etc.). Défaut: 'presse'."
+        )
+    ] = "presse",
+    to: Annotated[
+        int, 
+        Field(
+            description="Année de fin (YYYY). Défaut: 2022."
+        )
+    ] = 2022,
+    fr: Annotated[
+        int, 
+        Field(
+            alias="from", 
+            description="Année de début (YYYY). Défaut: 1789."
+        )
+    ] = 1789,
+    resolution: Annotated[
+        str, 
+        Field(
+            description="Granularité temporelle : 'annee' (recommandé), 'mois', ou 'jour' (selon corpus). Défaut: 'default'."
+        )
+    ] = "default",
+    rubrique: Annotated[
+        Optional[str], 
+        Field(
+            description="**Corpus `lemonde_rubriques` uniquement.** Codes des rubriques filtrées séparés par un espace (ex: 'international economie')."
+        )
+    ] = None,
+    by_rubrique: Annotated[
+        bool, 
+        Field(
+            description="**Corpus `lemonde_rubriques` uniquement.** Si True, trace une courbe distincte par rubrique."
+        )
+    ] = False,
+    chart_type: Annotated[
+        str, 
+        Field(
+            description="Type de rendu visuel : 'line' (courbes lissées des fréquences relatives) ou 'bar' (histogramme des occurrences absolues)."
+        )
+    ] = "line",
+    smoothing: Annotated[
+        Optional[int], 
+        Field(
+            description="Fenêtre de lissage par moyenne mobile centrée (ex: 3 ou 5). Si non spécifié, un lissage automatique optimal est appliqué."
+        )
+    ] = None
 ) -> Image:
     """
-    Génère un graphique (courbe ou barres) représentant l'évolution temporelle de la fréquence d'usage de mots dans Gallica.
+    Génère un graphique visuel haute résolution (image PNG à 200 DPI) représentant l'évolution temporelle de mots dans Gallicagram.
+
+    ### Quand utiliser cet outil :
+    - Quand l'utilisateur demande explicitement un graphique, une visualisation, une courbe ou un tracé visuel.
+    - Idéal pour comparer visuellement plusieurs termes ou illustrer une dynamique historique.
+
+    ### Syntaxe des termes (`mot`) :
+    - Comparaison : `"mot1,mot2,mot3"` -> plusieurs courbes colorées distinctes avec légende.
+    - Somme / Lemmatisation : `"mot1+mot2"` -> une seule courbe combinant les occurrences.
+
+    ### Retour :
+    Retourne un objet Image PNG encodé de manière compatible avec les protocoles MCP / Claude Desktop.
     """
     # Appel direct du endpoint FastAPI d'origine
     response = await fastapi_chart_v2(
